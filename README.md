@@ -9,6 +9,8 @@
 
 - 从初始化开始，添加了每一步代码的公式推导详解，公式推导主要参考了崔华坤的详解。
 
+- 附带一份自己的预积分推导、VINS初始化推导和VINS融合轮速计初始化的推导 [baidu cloud](https://pan.baidu.com/s/1VnsH11PtrKqtdmRjoYtBVg) 密码: pqw0
+
 ## 符号说明
 
 - T 一般代表4×4的变换矩阵 [R | p]，即位姿。
