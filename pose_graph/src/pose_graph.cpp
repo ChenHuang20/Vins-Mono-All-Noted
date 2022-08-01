@@ -79,6 +79,7 @@ void PoseGraph::addKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
     if (flag_detect_loop)
     {
         TicToc tmp_t;
+        //粗定位
         //回环检测，返回回环候选帧的索引
         loop_index = detectLoop(cur_kf, cur_kf->index);
     }
@@ -86,16 +87,15 @@ void PoseGraph::addKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
     {
         addKeyFrameIntoVoc(cur_kf);
     }
-
+    //如果检测到回环
 	if (loop_index != -1)
 	{
         printf(" %d detect loop with %d \n", cur_kf->index, loop_index);
 
         //获取闭环帧
         KeyFrame* old_kf = getKeyFrame(loop_index);
-
-        
-        if (cur_kf->findConnection(old_kf))//计算当前帧与闭环帧的相对位姿
+        //精定位
+        if (cur_kf->findConnection(old_kf))
         {
             //earliest_loop_index为最早的回环候选帧
             if (earliest_loop_index > loop_index || earliest_loop_index == -1)
@@ -119,17 +119,18 @@ void PoseGraph::addKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
             // T_w1_bj = T_w1_bi * T_bi_bj
             w_P_cur = w_R_old * relative_t + w_P_old;
             w_R_cur = w_R_old * relative_q;
-            
+
+
             //回环得到的位姿和VIO位姿之间的偏移量shift_r、shift_t,即T_w1_w2
             double shift_yaw;
             Matrix3d shift_r;
             Vector3d shift_t;
             //w_R_cur是T_w1_bj， vio_R_cur是T_w2_bj
-            //计算T_w1_w2
+            //计算4-Dof的T_w1_w2
             shift_yaw = Utility::R2ypr(w_R_cur).x() - Utility::R2ypr(vio_R_cur).x();
             shift_r = Utility::ypr2R(Vector3d(shift_yaw, 0, 0));
             shift_t = w_P_cur - w_R_cur * vio_R_cur.transpose() * vio_P_cur; 
-            
+
             // shift vio pose of whole sequence to the world frame
             //将所有图像序列都合并到世界坐标系下(w1)
             if (old_kf->sequence != cur_kf->sequence && sequence_loop[cur_kf->sequence] == 0)
@@ -141,8 +142,10 @@ void PoseGraph::addKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
                 //这里是把回环前 的cur_kf位姿转换到w1
                 vio_P_cur = w_r_vio * vio_P_cur + w_t_vio;
                 vio_R_cur = w_r_vio *  vio_R_cur;
+                
                 //更新cur_kf位姿，从w2->w1
                 cur_kf->updateVioPose(vio_P_cur, vio_R_cur);
+                //使用新的T_w1_w2更新所有历史关键帧keyframelist的位姿
                 list<KeyFrame*>::iterator it = keyframelist.begin();
                 for (; it != keyframelist.end(); it++)   
                 {
@@ -171,13 +174,15 @@ void PoseGraph::addKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
     Vector3d P;
     Matrix3d R;
 
-    //获取VIO当前帧的位姿P、R，根据偏移量得到实际位姿
+    //获取VIO当前帧的位姿T_w2_bj
     cur_kf->getVioPose(P, R);
+    //T_w1_bj = T_w1_w2 * T_w2_bj
+    // 转换到当前世界w1
     P = r_drift * P + t_drift;
     R = r_drift * R;
     //更新当前帧的位姿P、R
     cur_kf->updatePose(P, R);
-
+    
     //发布path[sequence_cnt]
     Quaterniond Q{R};
     geometry_msgs::PoseStamped pose_stamped;
@@ -254,6 +259,7 @@ void PoseGraph::addKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
     //posegraph_visualization->add_pose(P + Vector3d(VISUALIZATION_SHIFT_X, VISUALIZATION_SHIFT_Y, 0), Q);
 
 	keyframelist.push_back(cur_kf);
+    // 以关键帧更新的频率发布T_w1_bj
     publish();
 	m_keyframelist.unlock();
 }
@@ -401,6 +407,7 @@ int PoseGraph::detectLoop(KeyFrame* keyframe, int frame_index)
             auto it = image_pool.find(tmp_index);
             cv::Mat tmp_image = (it->second).clone();
             putText(tmp_image, "index:  " + to_string(tmp_index) + "loop score:" + to_string(ret[i].Score), cv::Point2f(10, 50), CV_FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255));
+            //水平方向拼接两张图片
             cv::hconcat(loop_result, tmp_image, loop_result);
         }
     }
@@ -648,7 +655,7 @@ void PoseGraph::optimize4DoF()
             //cout << "r_drift " << Utility::R2ypr(r_drift).transpose() << endl;
             //cout << "yaw drift " << yaw_drift << endl;
 
-            //这里将keyframelist中当前帧后面的关键帧通过求解的偏移量转换到一致world坐标系下。
+            //这里将keyframelist中当前帧后面的关键帧通过求解的偏移量转换到一致w1坐标系下。
             it++;
             for (; it != keyframelist.end(); it++)
             {
@@ -782,6 +789,7 @@ void PoseGraph::updatePath()
         }
 
     }
+    // 位姿图优化后发布T_w1_bj
     publish();
     m_keyframelist.unlock();
 }
@@ -914,6 +922,7 @@ void PoseGraph::loadPoseGraph()
         VIO_R = VIO_Q.toRotationMatrix();
         PG_R = PG_Q.toRotationMatrix();
         Eigen::Matrix<double, 8, 1 > loop_info;
+        // 取出相对位姿T 和相对的yaw
         loop_info << loop_info_0, loop_info_1, loop_info_2, loop_info_3, loop_info_4, loop_info_5, loop_info_6, loop_info_7;
 
         if (loop_index != -1)
@@ -935,6 +944,7 @@ void PoseGraph::loadPoseGraph()
         {
             BRIEF::bitset tmp_des;
             brief_file >> tmp_des;
+            // 取出描述子
             brief_descriptors.push_back(tmp_des);
             cv::KeyPoint tmp_keypoint;
             cv::KeyPoint tmp_keypoint_norm;
@@ -945,7 +955,9 @@ void PoseGraph::loadPoseGraph()
             tmp_keypoint.pt.y = p_y;
             tmp_keypoint_norm.pt.x = p_x_norm;
             tmp_keypoint_norm.pt.y = p_y_norm;
+            // 取出关键像素点
             keypoints.push_back(tmp_keypoint);
+            // 取出关键点的归一化坐标
             keypoints_norm.push_back(tmp_keypoint_norm);
         }
         brief_file.close();
@@ -955,7 +967,7 @@ void PoseGraph::loadPoseGraph()
         loadKeyFrame(keyframe, 0);
         if (cnt % 20 == 0)
         {
-            publish();
+            publish();// 加载位姿图时发布T_w1_bj
         }
         cnt++;
     }
@@ -984,7 +996,9 @@ void PoseGraph::publish()
 //更新关键帧的回环信息
 void PoseGraph::updateKeyFrameLoop(int index, Eigen::Matrix<double, 8, 1 > &_loop_info)
 {
+    // 拿到回环帧
     KeyFrame* kf = getKeyFrame(index);
+    // 更新回环帧与当前帧相对位姿T_bi_bj（这里是通过后端优化过的，而不是简单的pnp）
     kf->updateLoop(_loop_info);
 
     if (abs(_loop_info(7)) < 30.0 && Vector3d(_loop_info(0), _loop_info(1), _loop_info(2)).norm() < 20.0)
@@ -994,22 +1008,31 @@ void PoseGraph::updateKeyFrameLoop(int index, Eigen::Matrix<double, 8, 1 > &_loo
             KeyFrame* old_kf = getKeyFrame(kf->loop_index);
             Vector3d w_P_old, w_P_cur, vio_P_cur;
             Matrix3d w_R_old, w_R_cur, vio_R_cur;
+            // T_w1_bi
             old_kf->getPose(w_P_old, w_R_old);
+            // T_w2_bj
             kf->getVioPose(vio_P_cur, vio_R_cur);
 
             Vector3d relative_t;
             Quaterniond relative_q;
+            // T_bi_bj
             relative_t = kf->getLoopRelativeT();
             relative_q = (kf->getLoopRelativeQ()).toRotationMatrix();
+
+            // T_w1_bj = T_w1_bi * T_bi_bj
             w_P_cur = w_R_old * relative_t + w_P_old;
             w_R_cur = w_R_old * relative_q;
+
+            // 计算4-Dof的T_w1_w2
+            // T_w1_w2 = T_w1_bj * (T_w2_bj).t
             double shift_yaw;
             Matrix3d shift_r;
-            Vector3d shift_t; 
+            Vector3d shift_t;
             shift_yaw = Utility::R2ypr(w_R_cur).x() - Utility::R2ypr(vio_R_cur).x();
             shift_r = Utility::ypr2R(Vector3d(shift_yaw, 0, 0));
             shift_t = w_P_cur - w_R_cur * vio_R_cur.transpose() * vio_P_cur; 
 
+            //更新 T_w1_w2
             m_drift.lock();
             yaw_drift = shift_yaw;
             r_drift = shift_r;

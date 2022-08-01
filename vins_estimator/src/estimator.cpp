@@ -761,6 +761,7 @@ void Estimator::double2vector()
     {
         Matrix3d relo_r;
         Vector3d relo_t;
+        // T_w2_bi
         relo_r = rot_diff * Quaterniond(relo_Pose[6], relo_Pose[3], relo_Pose[4], relo_Pose[5]).normalized().toRotationMatrix();
         relo_t = rot_diff * Vector3d(relo_Pose[0] - para_Pose[0][0],
                                      relo_Pose[1] - para_Pose[0][1],
@@ -769,6 +770,9 @@ void Estimator::double2vector()
         drift_correct_yaw = Utility::R2ypr(prev_relo_r).x() - Utility::R2ypr(relo_r).x();
         drift_correct_r = Utility::ypr2R(Vector3d(drift_correct_yaw, 0, 0));
         drift_correct_t = prev_relo_t - drift_correct_r * relo_t;   
+
+        // for pubRelocalization
+        // T_bi_bj = T_bi_w2 * T_w2_bj
         relo_relative_t = relo_r.transpose() * (Ps[relo_frame_local_index] - relo_t);
         relo_relative_q = relo_r.transpose() * Rs[relo_frame_local_index];
         relo_relative_yaw = Utility::normalizeAngle(Utility::R2ypr(Rs[relo_frame_local_index]).x() - Utility::R2ypr(relo_r).x());
@@ -962,6 +966,12 @@ void Estimator::optimization()
     ROS_DEBUG("prepare for ceres: %f", t_prepare.toc());
 
     //添加闭环检测残差，计算滑动窗口中与每一个闭环关键帧的相对位姿，这个相对位置是为后面的图优化准备
+    // 1.在回环约束中已知回环帧匹配到了哪些地图点，以id的形式记录。
+    // 2.在滑动窗口内搜索具有相同id的地图点，建立重投影误差，当前帧的位姿作为初始位姿。
+    // 3.优化重投影误差，得到回环帧在当前滑动窗口具有的地图点下，应该所处的位姿T_w2_relo (T_w2_bi)。
+    // 这里相当于一个pnp的优化算法，用重投影误差构建优化项解算，而不是SVD解算
+    // 输入是当前帧（滑窗内）的3d点,和回环帧的2d点，设当前世界为w2,即优化变量为T_w2_bi，但是这里不只优化T_w2_bi，还优化了相关的T_w2_bj
+    // 其实通过这种方式修正的位姿，只利用了一帧约束，并不是非常准确，所以称之为快速重定位
     if(relocalization_info)
     {
         //printf("set relocalization factor! \n");
@@ -969,22 +979,31 @@ void Estimator::optimization()
         problem.AddParameterBlock(relo_Pose, SIZE_POSE, local_parameterization);
         int retrive_feature_index = 0;
         int feature_index = -1;
-        for (auto &it_per_id : f_manager.feature)
+        for (auto &it_per_id : f_manager.feature)//遍历每一个三维点(路标点)Pl
         {
             it_per_id.used_num = it_per_id.feature_per_frame.size();
             if (!(it_per_id.used_num >= 2 && it_per_id.start_frame < WINDOW_SIZE - 2))
                 continue;
-            ++feature_index;
-            int start = it_per_id.start_frame;
+            ++feature_index;// Pl的下标，即l的值，从0开始，这里用做逆深度的ID
+            int start = it_per_id.start_frame;// Pl投影到的第一帧ID
+            // relo_frame_local_index是滑窗内回环帧的id，这里相当于取滑窗内回环帧之前的帧
             if(start <= relo_frame_local_index)
-            {   
+            {
+                /*
+                match_points.x = matched_2d_old_norm[i].x;
+                match_points.y = matched_2d_old_norm[i].y;
+                match_points.z = matched_id[i];
+                */
+                // 找到匹配点
                 while((int)match_points[retrive_feature_index].z() < it_per_id.feature_id)
                 {
                     retrive_feature_index++;
                 }
                 if((int)match_points[retrive_feature_index].z() == it_per_id.feature_id)
                 {
+                    //得到Pl投影到的回环帧观测到的特征点的归一化相机坐标pts_j
                     Vector3d pts_j = Vector3d(match_points[retrive_feature_index].x(), match_points[retrive_feature_index].y(), 1.0);
+                    //得到Pl投影到的首帧观测到的特征点的归一化相机坐标pts_i
                     Vector3d pts_i = it_per_id.feature_per_frame[0].point;
                     
                     ProjectionFactor *f = new ProjectionFactor(pts_i, pts_j);
@@ -1371,12 +1390,12 @@ void Estimator::setReloFrame(double _frame_stamp, int _frame_index, vector<Vecto
     prev_relo_r = _relo_r;
     for(int i = 0; i < WINDOW_SIZE; i++)
     {
-        if(relo_frame_stamp == Headers[i].stamp.toSec())
+        if(relo_frame_stamp == Headers[i].stamp.toSec())//找到滑动窗口里的回环帧
         {
             relo_frame_local_index = i;
             relocalization_info = 1;
             for (int j = 0; j < SIZE_POSE; j++)
-                relo_Pose[j] = para_Pose[i][j];
+                relo_Pose[j] = para_Pose[i][j];//给回环帧要优化的位姿赋初值（等于滑窗内优化的位姿）
         }
     }
 }

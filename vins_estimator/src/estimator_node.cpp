@@ -329,7 +329,7 @@ void process()
             // set relocalization frame
             sensor_msgs::PointCloudConstPtr relo_msg = NULL;
             
-            //取出最后一个重定位帧
+            //取出最后一个重定位帧，并清空缓存
             while (!relo_buf.empty())
             {
                 relo_msg = relo_buf.front();

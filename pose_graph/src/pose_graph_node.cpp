@@ -184,7 +184,7 @@ void imu_forward_callback(const nav_msgs::Odometry::ConstPtr &forward_msg)
         Vector3d vio_t_cam;
         Quaterniond vio_q_cam;
         vio_t_cam = vio_t + vio_q * tic;
-        vio_q_cam = vio_q * qic;        
+        vio_q_cam = vio_q * qic;
 
         cameraposevisual.reset();
         cameraposevisual.add_pose(vio_t_cam, vio_q_cam);
@@ -192,7 +192,7 @@ void imu_forward_callback(const nav_msgs::Odometry::ConstPtr &forward_msg)
     }
 }
 
-//重定位回调函数，将重定位帧的相对位姿放入loop_info，updateKeyFrameLoop()进行回环更新
+//重定位回调函数，将后端vins_estimator的重定位帧的相对位姿放入loop_info，updateKeyFrameLoop()进行回环更新
 void relo_relative_pose_callback(const nav_msgs::Odometry::ConstPtr &pose_msg)
 {
     Vector3d relative_t = Vector3d(pose_msg->pose.pose.position.x,
